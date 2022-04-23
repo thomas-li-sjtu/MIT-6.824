@@ -1,0 +1,8 @@
+{
+    "terminal.integrated.fontFamily": "monospace",
+    "terminal.integrated.fontSize": 14,
+    "terminal.integrated.copyOnSelection": true,
+    "terminal.integrated.rightClickBehavior": "paste",
+    "editor.fontFamily": "Consolas, 'Courier New', monospace",
+    "editor.fontSize": 16
+}
