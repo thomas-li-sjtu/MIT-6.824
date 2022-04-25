@@ -6,7 +6,6 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net/rpc"
 	"os"
 	"sort"
@@ -29,19 +28,15 @@ func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
-//
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	worker_id := strconv.Itoa(os.Getpid())
@@ -52,8 +47,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			Worker_id: worker_id,
 			Task_type: "",
 		}
-		time.Sleep(1 * time.Second)
 		call_result := call("Coordinator.Ask_for_task", &args, &reply)
+		time.Sleep(1 * time.Second)
 		if !call_result || reply.Task_type == "done" { // call不成功，可能job已经结束
 			break
 		}
@@ -91,18 +86,14 @@ func Worker(mapf func(string, string) []KeyValue,
 				_ = encoders[ihash(kv.Key)%reply.Num_reduce].Encode(&kv)
 			}
 
-			fmt.Println("reporting map")
-			randint := rand.Intn(500)
-			time.Sleep(time.Duration(randint) * time.Millisecond)
 			call("Coordinator.Finish", &Finish_args{Worker_id: worker_id, Task_type: "map", Task_index: reply.Task_index}, &Finish_reply{})
-
 		case "reduce":
 			// 读取中间结果
-			intermediate := make([]KeyValue, 1)
+			var intermediate []KeyValue
 			for _, file_name := range reply.Intermediate_files {
 				file, err := os.Open(file_name)
 				if err != nil {
-					log.Fatalf("cannot open %v", file_name)
+					log.Fatalf("cannot open intermediate file %v", file_name)
 					return
 				}
 				dec := json.NewDecoder(file)
@@ -154,43 +145,14 @@ func Worker(mapf func(string, string) []KeyValue,
 				return
 			}
 
-			fmt.Println("reporting")
 			call("Coordinator.Finish", &Finish_args{Worker_id: worker_id, Task_type: "reduce", Task_index: reply.Task_index}, &Finish_reply{})
 		}
-
 	}
-	// uncomment to send the Example RPC to the Coordinator.
-	// CallExample()
 }
 
-//
-// example function to show how to make an RPC call to the Coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Coordinator.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
-}
-
-//
 // send an RPC request to the Coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := masterSock()
@@ -200,7 +162,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 	defer c.Close()
 
-	fmt.Println("call " + rpcname)
 	err = c.Call(rpcname, args, reply)
 	if err == nil {
 		return true

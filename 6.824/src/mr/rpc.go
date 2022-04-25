@@ -1,10 +1,6 @@
 package mr
 
-//
 // RPC definitions.
-//
-// remember to capitalize all names.
-//
 
 import (
 	"os"
@@ -12,26 +8,23 @@ import (
 	"time"
 )
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
-
 // Add your RPC definitions here.
-type Task struct {
-	index     int    // 当前task号（即第i个文件）
-	worker_id string // 当前task所属worker的id
-	task_type string
-	file_name string
-	deadline  time.Time
+type Map_task struct {
+	Index       int    // 当前task号（即第i个文件）
+	Worker_id   string // 当前task所属worker的id
+	File_name   string
+	Deadline    time.Time
+	Map_done    int
+	Distributed bool // 是否已经分配出去
+}
+
+type Reduce_task struct {
+	Index              int    // 当前task号（即第i个文件）
+	Worker_id          string // 当前task所属worker的id
+	Intermediate_files []string
+	Deadline           time.Time
+	Reduce_done        int
+	Distributed        bool // 是否已经分配出去
 }
 
 type Ask_args struct { // worker申请时，向Coordinator发送的args
