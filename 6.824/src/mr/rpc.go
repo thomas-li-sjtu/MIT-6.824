@@ -26,55 +26,37 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
-
-type Placeholder struct{}
-
-// ====== FinishTask =======
-
-type FinishArgs struct {
-	IsMap bool
-	Id    int
-}
-
-// ====== Task =======
-
-type TaskState int
-
-const (
-	Pending TaskState = iota
-	Executing
-	Finished
-)
-
-type MapTask struct {
-	TaskMeta
-	Filename string
-}
-
-type ReduceTask struct {
-	TaskMeta
-	IntermediateFilenames []string
-}
-
-type TaskMeta struct {
-	State     TaskState
-	StartTime time.Time
-	Id        int
-}
-
-type TaskOperation int
-
-const (
-	ToWait TaskOperation = iota
-	ToRun
-)
-
 type Task struct {
-	Operation TaskOperation
-	IsMap     bool
-	NReduce   int
-	Map       MapTask
-	Reduce    ReduceTask
+	index     int    // 当前task号（即第i个文件）
+	worker_id string // 当前task所属worker的id
+	task_type string
+	file_name string
+	deadline  time.Time
+}
+
+type Ask_args struct { // worker申请时，向Coordinator发送的args
+	Worker_id string // 做申请的worker id
+	Task_type string // 上一个完成的task的类型
+}
+
+type Ask_reply struct { // Coordinator收到worker申请时，回复的reply
+	File_name          string
+	Num_reduce         int
+	Task_op            int
+	Task_type          string
+	Task_index         int // map任务时，输出的文件名为mr-Task_index-0, ~-1, ..., ~-(Num_reduce-1)
+	Task_deadline      time.Time
+	Worker_id          string
+	Intermediate_files []string // 分配reduce任务时，对应的map中间文件名列表
+}
+
+type Finish_args struct { // worker完成时，向Coordinator发送的args
+	Worker_id  string // 发送结束信号的worker进程号
+	Task_type  string // worker完成的任务类型
+	Task_index int    // 完成的task id
+}
+
+type Finish_reply struct { // Coordinator收到worker完成消息时，回复的reply（不需要reply，所以为空）
 }
 
 // Cook up a unique-ish UNIX-domain socket name

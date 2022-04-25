@@ -6,9 +6,11 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/rpc"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -20,6 +22,13 @@ type KeyValue struct {
 	Value string
 }
 
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -30,131 +39,152 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-type MapF func(string, string) []KeyValue
-type ReduceF func(string, []string) string
-
 //
 // main/mrworker.go calls this function.
 //
-func Worker(mapf MapF, reducef ReduceF) {
-	log.SetOutput(ioutil.Discard)
+func Worker(mapf func(string, string) []KeyValue,
+	reducef func(string, []string) string) {
+	worker_id := strconv.Itoa(os.Getpid())
+	// Your worker implementation here.
 	for {
+		reply := Ask_reply{}
+		args := Ask_args{
+			Worker_id: worker_id,
+			Task_type: "",
+		}
 		time.Sleep(1 * time.Second)
-		task := Task{}
-		call("Coordinator.RequestTask", &Placeholder{}, &task)
-
-		if task.Operation == ToWait {
+		call_result := call("Coordinator.Ask_for_task", &args, &reply)
+		if !call_result || reply.Task_type == "done" { // call不成功，可能job已经结束
+			break
+		}
+		if reply.Task_op == 0 {
 			continue
 		}
-
-		if task.IsMap {
-			log.Printf("received map job %s", task.Map.Filename)
-			err := handleMap(task, mapf)
+		switch reply.Task_type {
+		case "map":
+			file, err := os.Open(reply.File_name)
 			if err != nil {
-				log.Fatalf(err.Error())
+				log.Fatalf("cannot open %v", reply.File_name)
 				return
 			}
-		} else {
-			log.Printf("received reduce job %d %v", task.Reduce.Id, task.Reduce.IntermediateFilenames)
-			err := handleReduce(task, reducef)
+			content, err := ioutil.ReadAll(file)
 			if err != nil {
-				log.Fatalf(err.Error())
+				log.Fatalf("cannot read %v", reply.File_name)
 				return
 			}
-		}
-	}
-}
+			defer file.Close()
 
-func handleMap(task Task, mapf MapF) error {
-	filename := task.Map.Filename
-	file, err := os.Open(filename)
-	if err != nil {
-		log.Fatalf("cannot open %v", filename)
-	}
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Fatalf("cannot read %v", filename)
-	}
-	defer file.Close()
+			key_value := mapf(reply.File_name, string(content))
 
-	kva := mapf(filename, string(content))
-	var encoders []*json.Encoder
-	for i := 0; i < task.NReduce; i++ {
-		f, err := os.Create(fmt.Sprintf("mr-%d-%d", task.Map.Id, i))
-		if err != nil {
-			log.Fatalf("cannot create intermediate result file")
-		}
-		encoders = append(encoders, json.NewEncoder(f))
-	}
-
-	for _, kv := range kva {
-		_ = encoders[ihash(kv.Key)%task.NReduce].Encode(&kv)
-	}
-
-	call("Coordinator.Finish", &FinishArgs{IsMap: true, Id: task.Map.Id}, &Placeholder{})
-	return nil
-}
-
-func handleReduce(task Task, reducef ReduceF) error {
-	var kva []KeyValue
-	for _, filename := range task.Reduce.IntermediateFilenames {
-		iFile, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		dec := json.NewDecoder(iFile)
-		for {
-			var kv KeyValue
-			if err := dec.Decode(&kv); err != nil {
-				break
+			// 创建输出文件
+			var encoders []*json.Encoder
+			for i := 0; i < reply.Num_reduce; i++ {
+				f, err := os.Create(fmt.Sprintf("mr-%d-%d", reply.Task_index, i))
+				if err != nil {
+					log.Fatalf("cannot create intermediate result file")
+					return
+				}
+				encoders = append(encoders, json.NewEncoder(f))
 			}
-			kva = append(kva, kv)
+			// 写入中间结果
+			for _, kv := range key_value {
+				_ = encoders[ihash(kv.Key)%reply.Num_reduce].Encode(&kv)
+			}
+
+			fmt.Println("reporting map")
+			randint := rand.Intn(500)
+			time.Sleep(time.Duration(randint) * time.Millisecond)
+			call("Coordinator.Finish", &Finish_args{Worker_id: worker_id, Task_type: "map", Task_index: reply.Task_index}, &Finish_reply{})
+
+		case "reduce":
+			// 读取中间结果
+			intermediate := make([]KeyValue, 1)
+			for _, file_name := range reply.Intermediate_files {
+				file, err := os.Open(file_name)
+				if err != nil {
+					log.Fatalf("cannot open %v", file_name)
+					return
+				}
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv)
+				}
+				err = file.Close()
+				if err != nil {
+					log.Fatalf("cannot close %v", file_name)
+					return
+				}
+			}
+
+			sort.Sort(ByKey(intermediate))
+
+			oname := fmt.Sprintf("mr-out-%d", reply.Task_index)
+			temp, err := os.CreateTemp(".", oname)
+			if err != nil {
+				log.Fatalf("cannot create reduce result tempfile %s", oname)
+				return
+			}
+
+			// call Reduce on each distinct key in intermediate[],
+			// and print the result to mr-out-0.
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(temp, "%v %v\n", intermediate[i].Key, output)
+
+				i = j
+			}
+
+			err = os.Rename(temp.Name(), oname)
+			if err != nil {
+				return
+			}
+
+			fmt.Println("reporting")
+			call("Coordinator.Finish", &Finish_args{Worker_id: worker_id, Task_type: "reduce", Task_index: reply.Task_index}, &Finish_reply{})
 		}
-		err = iFile.Close()
-		if err != nil {
-			log.Fatalf("cannot close %v", filename)
-		}
+
 	}
-
-	sort.Sort(ByKey(kva))
-	oname := fmt.Sprintf("mr-out-%d", task.Reduce.Id)
-	temp, err := os.CreateTemp(".", oname)
-	if err != nil {
-		log.Fatalf("cannot create reduce result tempfile %s", oname)
-		return err
-	}
-
-	i := 0
-	for i < len(kva) {
-		j := i + 1
-		for j < len(kva) && kva[j].Key == kva[i].Key {
-			j++
-		}
-		var values []string
-		for k := i; k < j; k++ {
-			values = append(values, kva[k].Value)
-		}
-		output := reducef(kva[i].Key, values)
-
-		// this is the correct format for each line of Reduce output.
-		_, _ = fmt.Fprintf(temp, "%v %v\n", kva[i].Key, output)
-
-		i = j
-	}
-	err = os.Rename(temp.Name(), oname)
-	if err != nil {
-		return err
-	}
-
-	call("Coordinator.Finish", &FinishArgs{IsMap: false, Id: task.Reduce.Id}, &Placeholder{})
-	return nil
+	// uncomment to send the Example RPC to the Coordinator.
+	// CallExample()
 }
 
-type ByKey []KeyValue
+//
+// example function to show how to make an RPC call to the Coordinator.
+//
+// the RPC argument and reply types are defined in rpc.go.
+//
+func CallExample() {
 
-func (a ByKey) Len() int           { return len(a) }
-func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+	// declare an argument structure.
+	args := ExampleArgs{}
+
+	// fill in the argument(s).
+	args.X = 99
+
+	// declare a reply structure.
+	reply := ExampleReply{}
+
+	// send the RPC request, wait for the reply.
+	call("Coordinator.Example", &args, &reply)
+
+	// reply.Y should be 100.
+	fmt.Printf("reply.Y %v\n", reply.Y)
+}
 
 //
 // send an RPC request to the Coordinator, wait for the response.
@@ -170,12 +200,12 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 	defer c.Close()
 
+	fmt.Println("call " + rpcname)
 	err = c.Call(rpcname, args, reply)
 	if err == nil {
 		return true
 	}
 
 	fmt.Println(err)
-	os.Exit(0)
 	return false
 }
