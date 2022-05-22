@@ -8,26 +8,29 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
+	// 初始化raft实例的网络连接
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
-	cfg.begin("Test (2A): initial election")
+	cfg.begin("Test (2A): initial election") //运行
 
 	// is a leader elected?
-	cfg.checkOneLeader()
+	cfg.checkOneLeader() //检查raft是否选出了一个leader
 
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
@@ -38,6 +41,7 @@ func TestInitialElection2A(t *testing.T) {
 	}
 
 	// does the leader+term stay the same if there is no network failure?
+	// 检测leader是否稳定存在
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {

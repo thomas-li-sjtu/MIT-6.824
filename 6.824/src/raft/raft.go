@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"time"
+
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -26,6 +28,12 @@ import (
 	"6.824/labrpc"
 )
 
+const (
+	heat_beat_time = 50 * time.Millisecond // leader广播心跳的时间间隔
+	TO_FOLLOWER    = 0
+	TO_CANDIDATE   = 1
+	TO_LEADER      = 2
+)
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -61,9 +69,31 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	// Your data here (2A, 2B, 2C).
+	voted_for    int       // candidate id（rf.me）that received vote in current term
+	cur_term     int       // 当前的term
+	timeout      time.Time // 接收心跳的时间上线，超过该时间则follower成为candidate
+	state        string    // 状态: follower candidate leader
+	get_vote_num int       // 该实例得到的票数
+
+	log []Entry
+
+	commit_index int // index of highest log entry known to be committed
+	last_applied int // index of highest log entry applied to state machine
+
+	next_index  []int
+	match_index []int
+
+	applyCh chan ApplyMsg
+	// SnapShot Point use
+	last_snapshot_point_index int
+	last_snapshot_point_term  int
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+}
 
+type Entry struct {
+	Term    int
+	Command interface{}
 }
 
 // return currentTerm and whether this server
@@ -73,7 +103,34 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.cur_term
+	isleader = rf.state == "leader"
+
 	return term, isleader
+}
+
+// 获得最后一个log的index
+func (rf *Raft) get_last_index() int {
+	return len(rf.log) - 1 + rf.last_snapshot_point_index
+}
+
+// 获得最后一个log对应的term
+func (rf *Raft) get_last_term() int {
+	if len(rf.log) == 0 {
+		return rf.last_snapshot_point_term // 当前没有log记录，因此返回上一个快照log的记录
+	} else {
+		return rf.log[len(rf.log)-1].Term // 当前有log，直接读取最后一个log的term
+	}
+}
+
+// 检查当前raft存储的log是否新于输入的index和term
+func (rf *Raft) is_updated(index, term int) bool {
+	cur_log_index_saved := rf.get_last_index()
+	cur_term_saved := rf.get_last_term()
+	return cur_term_saved > term ||
+		cur_term_saved == term && cur_log_index_saved > index
 }
 
 //
@@ -91,7 +148,6 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -115,7 +171,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -134,30 +189,6 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
-}
-
-
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
 }
 
 //
@@ -194,6 +225,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntryArgs, reply *AppendEntryReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -215,7 +250,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -241,18 +275,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// The ticker go routine starts a new election if this peer hasn't received
-// heartsbeats recently.
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-		// time.Sleep().
-
-	}
-}
-
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -264,21 +286,33 @@ func (rf *Raft) ticker() {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.voted_for = -1
+	rf.cur_term = 0
+	// rf.timeout = time.Now().Add(heat_beat_time) // 要在这个时间点前收到心跳信号
+	rf.state = "follower" // 初始所有rf节点为follower
+	rf.get_vote_num = 0
+	rf.commit_index = 0
+	rf.last_applied = 0
+	rf.last_snapshot_point_index = 0
+	rf.last_snapshot_point_term = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	if rf.last_snapshot_point_index > 0 {
+		rf.last_applied = rf.last_snapshot_point_index
+	}
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
-
+	go rf.candidate_election_ticker()
+	// start ticker goroutine to append entries (including sending heartbeat)
+	go rf.leader_append_entries_ticker()
 
 	return rf
 }
