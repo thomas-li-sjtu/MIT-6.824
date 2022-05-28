@@ -226,7 +226,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// leader raft为该命令建立一个log entry
 		index := rf.get_last_index() + 1
 		rf.log = append(rf.log, Entry{Term: rf.cur_term, Command: command})
-		rf.persist()
+		// rf.persist()
 		return index, rf.cur_term, true
 	}
 }
