@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"bytes"
 	"time"
 
 	//	"bytes"
@@ -25,11 +26,13 @@ import (
 	"sync/atomic"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
 const (
-	heat_beat_time = 50 * time.Millisecond // leader广播心跳的时间间隔
+	Heat_beat_time = 50 * time.Millisecond // leader广播心跳的时间间隔
+	Apply_time     = 51 * time.Millisecond
 	TO_FOLLOWER    = 0
 	TO_CANDIDATE   = 1
 	TO_LEADER      = 2
@@ -80,8 +83,8 @@ type Raft struct {
 	commit_index int // index of highest log entry known to be committed
 	last_applied int // index of highest log entry applied to state machine
 
-	next_index  []int
-	match_index []int
+	next_index  []int // 对于第i个服务器，要发送给该服务器的下一个log entry的索引。
+	match_index []int // 对于第i个服务器，已知的在该服务器上复制的最高log entry的索引
 
 	applyCh chan ApplyMsg
 	// SnapShot Point use
@@ -99,38 +102,10 @@ type Entry struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	term = rf.cur_term
-	isleader = rf.state == "leader"
-
-	return term, isleader
-}
-
-// 获得最后一个log的index
-func (rf *Raft) get_last_index() int {
-	return len(rf.log) - 1 + rf.last_snapshot_point_index
-}
-
-// 获得最后一个log对应的term
-func (rf *Raft) get_last_term() int {
-	if len(rf.log) == 0 {
-		return rf.last_snapshot_point_term // 当前没有log记录，因此返回上一个快照log的记录
-	} else {
-		return rf.log[len(rf.log)-1].Term // 当前有log，直接读取最后一个log的term
-	}
-}
-
-// 检查当前raft存储的log是否新于输入的index和term
-func (rf *Raft) is_updated(index, term int) bool {
-	cur_log_index_saved := rf.get_last_index()
-	cur_term_saved := rf.get_last_term()
-	return cur_term_saved > term ||
-		cur_term_saved == term && cur_log_index_saved > index
+	return rf.cur_term, rf.state == "leader"
 }
 
 //
@@ -138,6 +113,7 @@ func (rf *Raft) is_updated(index, term int) bool {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
+
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
@@ -147,15 +123,55 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	data := rf.persistData()
+	rf.persister.SaveRaftState(data)
+}
+
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) readPersist(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	// Your code here (2C).
+	// Example:
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var persist_currentTrem int
+	var persist_voteFor int
+	var persist_log []Entry
+	//var persist_lastApplied int
+	var persist_lastSSPointIndex int
+	var persist_lastSSPointTerm int
+	//var persist_snapshot []byte
+
+	if d.Decode(&persist_currentTrem) != nil ||
+		d.Decode(&persist_voteFor) != nil ||
+		d.Decode(&persist_log) != nil ||
+		//d.Decode(&persist_lastApplied) != nil ||
+		d.Decode(&persist_lastSSPointIndex) != nil ||
+		d.Decode(&persist_lastSSPointTerm) != nil {
+		//d.Decode(&persist_snapshot) != nil{
+		DPrintf("%d read persister got a problem!!!!!!!!!!", rf.me)
+	} else {
+		rf.cur_term = persist_currentTrem
+		rf.voted_for = persist_voteFor
+		rf.log = persist_log
+		// rf.lastApplied = persist_lastApplied
+		rf.last_snapshot_point_index = persist_lastSSPointIndex
+		rf.last_snapshot_point_term = persist_lastSSPointTerm
+		// rf.persister.SaveStateAndSnapshot(rf.persistData(),persist_snapshot)
+	}
 }
 
 //
 // restore previously persisted state.
 //
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
+func (rf *Raft) persistData() []byte {
+
 	// Your code here (2C).
 	// Example:
 	// r := bytes.NewBuffer(data)
@@ -169,65 +185,17 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
-}
-
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntryArgs, reply *AppendEntryReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.cur_term)
+	e.Encode(rf.voted_for)
+	e.Encode(rf.log)
+	// e.Encode(rf.lastApplied)
+	e.Encode(rf.last_snapshot_point_index)
+	e.Encode(rf.last_snapshot_point_term)
+	//e.Encode(rf.persister.ReadSnapshot())
+	data := w.Bytes()
+	return data
 }
 
 //
@@ -245,13 +213,22 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntryArgs, reply *Appe
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	return index, term, isLeader
+	if rf.killed() {
+		return -1, -1, false
+	}
+	if rf.state != "leader" {
+		return -1, -1, false
+	} else {
+		// leader raft为该命令建立一个log entry
+		index := rf.get_last_index() + 1
+		rf.log = append(rf.log, Entry{Term: rf.cur_term, Command: command})
+		rf.persist()
+		return index, rf.cur_term, true
+	}
 }
 
 //
@@ -293,15 +270,19 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.mu.Lock()
 	rf.voted_for = -1
 	rf.cur_term = 0
-	// rf.timeout = time.Now().Add(heat_beat_time) // 要在这个时间点前收到心跳信号
 	rf.state = "follower" // 初始所有rf节点为follower
 	rf.get_vote_num = 0
 	rf.commit_index = 0
 	rf.last_applied = 0
+	rf.log = []Entry{}
+	rf.log = append(rf.log, Entry{})
 	rf.last_snapshot_point_index = 0
 	rf.last_snapshot_point_term = 0
+	rf.applyCh = applyCh
+	rf.mu.Unlock()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -313,6 +294,8 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	go rf.candidate_election_ticker()
 	// start ticker goroutine to append entries (including sending heartbeat)
 	go rf.leader_append_entries_ticker()
+	// 模拟集群把已经commited 的Entry应用在状态虚拟机上，检测是否存在已经被commited但没有Applied的Entry，将Entry信息发送给测试系统提供的chan中
+	go rf.committed_to_apply_ticker()
 
 	return rf
 }
