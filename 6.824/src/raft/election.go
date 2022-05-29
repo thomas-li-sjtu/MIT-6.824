@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -29,6 +28,7 @@ func (rf *Raft) change_state(change_to int, reset_timestamp bool) {
 		rf.cur_term += 1
 		rf.get_vote_num = 1 // 投自己一票
 		rf.voted_for = rf.me
+		rf.persist()
 		rf.candidate_election()
 		rf.timeout = time.Now()
 	}
@@ -37,6 +37,7 @@ func (rf *Raft) change_state(change_to int, reset_timestamp bool) {
 		rf.state = "follower"
 		rf.get_vote_num = 0
 		rf.voted_for = -1
+		rf.persist()
 		if reset_timestamp {
 			rf.timeout = time.Now()
 		}
@@ -46,6 +47,7 @@ func (rf *Raft) change_state(change_to int, reset_timestamp bool) {
 		rf.state = "leader"
 		rf.voted_for = -1
 		rf.get_vote_num = 0
+		rf.persist()
 
 		rf.next_index = make([]int, len(rf.peers))
 		for i := 0; i < len(rf.peers); i++ { // leader始终是最新的，next_index表明接下来要给follower发送的log index
@@ -82,6 +84,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// fmt.Println(rf.me, "change to follower")
 		rf.cur_term = args.Term
 		rf.change_state(TO_FOLLOWER, false)
+		rf.persist()
 	}
 
 	if !rf.need_update(args.Last_log_index, args.Last_log_term) {
@@ -101,9 +104,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.timeout = time.Now() // 重置时间
 			reply.Vote_for_you = true
 			reply.Term = rf.cur_term
+			rf.persist()
 		}
 	}
-	return
 }
 
 func (rf *Raft) candidate_election() {
@@ -145,7 +148,7 @@ func (rf *Raft) candidate_election() {
 					// 记录投票
 					rf.get_vote_num += 1
 					if rf.get_vote_num >= len(rf.peers)/2+1 {
-						fmt.Println(rf.me, "win the election")
+						// fmt.Println(rf.me, "win the election")
 						rf.change_state(TO_LEADER, true)
 						return
 					}

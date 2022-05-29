@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -78,14 +77,20 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 	} else {
 		rf.timeout = time.Now()
 	}
+	rf.persist() // 此时cur_term可能发生了改变（不经过change state），因此需要persist
 
 	// TODO: 考虑snapshot
+	if rf.last_snapshot_point_index > args.Prev_log_index {
+		reply.Success = false
+		reply.ConflictingIndex = rf.get_last_index() + 1
+		return
+	}
 
 	if rf.get_last_index() < args.Prev_log_index {
 		// 不满足rule2
 		reply.Success = false
 		reply.ConflictingIndex = rf.get_last_index()
-		fmt.Println("rule2 failed")
+		// fmt.Println("rule2 failed")
 		return
 	} else {
 		if rf.get_log_term(args.Prev_log_index) != args.Prev_log_term {
@@ -97,13 +102,14 @@ func (rf *Raft) AppendEntries(args *AppendEntryArgs, reply *AppendEntryReply) {
 					break
 				}
 			}
-			fmt.Println("rule2 failed")
+			// fmt.Println("rule2 failed")
 			return
 		}
 	}
 
 	// rule3、rule4
 	rf.log = append(rf.log[:args.Prev_log_index-rf.last_snapshot_point_index+1], args.Entries...) // ...表明args.Entries需要解包
+	rf.persist()
 
 	// rule5
 	if args.Leader_commit > rf.commit_index {
@@ -124,6 +130,13 @@ func (rf *Raft) leader_append_entries() {
 				return
 			}
 			// TODO: 缺少对snapshot的处理
+			prevLogIndextemp := rf.next_index[follower_id] - 1
+			// DPrintf("[IfNeedSendSnapShot] leader %d ,lastSSPIndex %d, server %d ,prevIndex %d",rf.me,rf.lastSSPointIndex,server,prevLogIndextemp)
+			if prevLogIndextemp < rf.last_snapshot_point_index {
+				go rf.leaderSendSnapShot(follower_id)
+				rf.mu.Unlock()
+				return
+			}
 
 			entry_args := AppendEntryArgs{}
 			if rf.get_last_index() >= rf.next_index[follower_id] {
@@ -167,7 +180,7 @@ func (rf *Raft) leader_append_entries() {
 				if rf.cur_term < entry_reply.Term {
 					// 可能任期不足
 					rf.cur_term = entry_reply.Term
-					rf.change_state(TO_FOLLOWER, true)
+					rf.change_state(TO_FOLLOWER, true) // change_state中persist
 					return
 				}
 
@@ -181,7 +194,7 @@ func (rf *Raft) leader_append_entries() {
 					// }
 				} else { // 失败
 					if entry_reply.ConflictingIndex != -1 {
-						fmt.Println("something wrong")
+						// fmt.Println("something wrong")
 						rf.next_index[follower_id] = entry_reply.ConflictingIndex
 					}
 				}
