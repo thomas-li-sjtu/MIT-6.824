@@ -31,8 +31,8 @@ import (
 )
 
 const (
-	Heat_beat_time = 50 * time.Millisecond // leader广播心跳的时间间隔
-	Apply_time     = 51 * time.Millisecond
+	Heat_beat_time = 27 * time.Millisecond // leader广播心跳的时间间隔
+	Apply_time     = 28 * time.Millisecond
 	TO_FOLLOWER    = 0
 	TO_CANDIDATE   = 1
 	TO_LEADER      = 2
