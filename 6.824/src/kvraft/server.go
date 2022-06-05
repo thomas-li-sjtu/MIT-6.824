@@ -1,7 +1,7 @@
 package kvraft
 
 import (
-	"fmt"
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -229,7 +229,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.last_request_id = make(map[int64]int)
 	kv.wait_apply_ch = make(map[int]chan Op)
 
-	// TODO: 载入snapshot
+	snapshot := persister.ReadSnapshot()
+	if len(snapshot) > 0 {
+		kv.ReadSnapShotToInstall(snapshot)
+	}
 
 	go kv.Read_Raft_Apply_Command()
 
@@ -243,7 +246,8 @@ func (kv *KVServer) Read_Raft_Apply_Command() {
 			kv.Get_Command_From_Raft(message)
 		}
 		if message.SnapshotValid {
-			fmt.Println("not implemented")
+			kv.GetSnapShotFromRaft(message)
+			// fmt.Println("not implemented")
 		}
 	}
 }
@@ -252,9 +256,9 @@ func (kv *KVServer) Get_Command_From_Raft(message raft.ApplyMsg) {
 	// leader（每个kvserver都是一个raft）执行put和append命令
 	op := message.Command.(Op)
 
-	// if message.CommandIndex <= kv.last_snapshot_log_index { // 当前命令已经被snapshot了
-	// 	return
-	// }
+	if message.CommandIndex <= kv.last_snapshot_log_index { // 当前命令已经被snapshot了
+		return
+	}
 
 	if !kv.Is_Duplicate(op.Client_id, op.Request_id) { // 判断这个request（op）是否重复
 		// leader执行put和append，get则可以由任意副本执行
@@ -267,7 +271,7 @@ func (kv *KVServer) Get_Command_From_Raft(message raft.ApplyMsg) {
 	}
 
 	if kv.maxraftstate != -1 {
-		//TODO 判断是否要snapshot
+		kv.IfNeedToSendSnapShotCommand(message.CommandIndex, 9)
 	}
 
 	kv.Send_Wait_Chan(op, message.CommandIndex)
@@ -337,4 +341,53 @@ func (kv *KVServer) Execute_Get(op Op) (string, bool) {
 		DPrintf("[KVServerExeGET----]ClientId :%d ,RequestID :%d ,Key : %v, But No KEY!!!!", op.Client_id, op.Request_id, op.Key)
 	}
 	return value, exist
+}
+
+func (kv *KVServer) IfNeedToSendSnapShotCommand(raftIndex int, proportion int) {
+	if kv.rf.GetRaftStateSize() > (kv.maxraftstate * proportion / 10) {
+		// Send SnapShot Command
+		snapshot := kv.MakeSnapShot()
+		kv.rf.Snapshot(raftIndex, snapshot)
+	}
+}
+
+// Handler the SnapShot from kv.rf.applyCh
+func (kv *KVServer) GetSnapShotFromRaft(message raft.ApplyMsg) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.rf.CondInstallSnapshot(message.SnapshotTerm, message.SnapshotIndex, message.Snapshot) {
+		kv.ReadSnapShotToInstall(message.Snapshot)
+		kv.last_snapshot_log_index = message.SnapshotIndex
+	}
+}
+
+// Give it to raft when server decide to start a snapshot
+func (kv *KVServer) MakeSnapShot() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.kv_database)
+	e.Encode(kv.last_request_id)
+	data := w.Bytes()
+	return data
+}
+
+func (kv *KVServer) ReadSnapShotToInstall(snapshot []byte) {
+	if snapshot == nil || len(snapshot) < 1 { // bootstrap without any state?
+		return
+	}
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+
+	var persist_kvdb map[string]string
+	var persist_lastRequestId map[int64]int
+
+	if d.Decode(&persist_kvdb) != nil || d.Decode(&persist_lastRequestId) != nil {
+		DPrintf("KVSERVER %d read persister got a problem!!!!!!!!!!", kv.me)
+	} else {
+		kv.kv_database = persist_kvdb
+		kv.last_request_id = persist_lastRequestId
+	}
 }
