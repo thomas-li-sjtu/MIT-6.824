@@ -1,7 +1,7 @@
 package shardctrler
 
 //
-// Shard controler: assigns shards to replication groups.
+// Master shard server: assigns shards to replication groups.
 //
 // RPC interface:
 // Join(servers) -- add a set of groups (gid -> server-list mapping).
@@ -24,50 +24,56 @@ const NShards = 10
 // Please don't change this.
 type Config struct {
 	Num    int              // config number
-	Shards [NShards]int     // shard -> gid
-	Groups map[int][]string // gid -> servers[]
+	Shards [NShards]int     // shard -> gid  根据分片id，查找其所在的group
+	Groups map[int][]string // gid -> servers[]  根据groupid，查找属于该group的servers id
 }
 
 const (
-	OK = "OK"
+	OK             = "OK"
+	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeOut     = "ErrTimeout"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers    map[int][]string // new GID -> servers mappings
+	Client_id  int64
+	Request_id int
 }
 
 type JoinReply struct {
-	WrongLeader bool
-	Err         Err
+	Err Err
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs       []int
+	Client_id  int64
+	Request_id int
 }
 
 type LeaveReply struct {
-	WrongLeader bool
-	Err         Err
+	Err Err
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard      int
+	GID        int
+	Client_id  int64
+	Request_id int
 }
 
 type MoveReply struct {
-	WrongLeader bool
-	Err         Err
+	Err Err
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num        int // desired config number
+	Client_id  int64
+	Request_id int
 }
 
 type QueryReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
+	Err    Err
+	Config Config
 }
