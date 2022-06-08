@@ -8,11 +8,14 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "6.824/labrpc"
-import "crypto/rand"
-import "math/big"
-import "6.824/shardctrler"
-import "time"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
+
+	"6.824/labrpc"
+	"6.824/shardctrler"
+)
 
 //
 // which shard is a key in?
@@ -40,6 +43,8 @@ type Clerk struct {
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	Client_id  int64
+	Request_id int
 }
 
 //
@@ -56,6 +61,9 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.Client_id = nrand()
+	ck.Request_id = 0
+	ck.config = ck.sm.Query(-1)
 	return ck
 }
 
@@ -66,13 +74,19 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	ck.Request_id += 1
 
 	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
+		args := GetArgs{
+			Key:        key,
+			Client_id:  ck.Client_id,
+			Request_id: ck.Request_id,
+			Config_num: ck.config.Num,
+		}
+
+		shard := key2shard(key)                       // 获得key所在shard的id
+		gid := ck.config.Shards[shard]                // 根据shard id获得其所在的group
+		if servers, ok := ck.config.Groups[gid]; ok { // 遍历group中的servers
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
@@ -91,8 +105,6 @@ func (ck *Clerk) Get(key string) string {
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
-
-	return ""
 }
 
 //
@@ -100,13 +112,17 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
+	ck.Request_id += 1
 
 	for {
+		args := PutAppendArgs{
+			Key:        key,
+			Value:      value,
+			Op:         op,
+			Client_id:  ck.Client_id,
+			Request_id: ck.Request_id,
+			Config_num: ck.config.Num,
+		}
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {

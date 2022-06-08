@@ -72,7 +72,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	sc.mu.Unlock()
 
 	select {
-	case <-time.After(time.Millisecond * 100):
+	case <-time.After(time.Millisecond * 500):
 		// DPrintf("[Leave TIMEOUT]From Client %d (Request %d) To Server %d, raftIndex %d", args.Client_id, args.Request_id, sc.me, raft_log_index)
 		_, is_leader := sc.rf.GetState()
 		if sc.Is_Duplicate(op.Client_id, op.Request_id) && is_leader {
@@ -117,7 +117,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	sc.mu.Unlock()
 
 	select {
-	case <-time.After(time.Millisecond * 100): // 超时
+	case <-time.After(time.Millisecond * 500): // 超时
 		// DPrintf("[Leave TIMEOUT]From Client %d (Request %d) To Server %d, raftIndex %d", args.Client_id, args.Request_id, sc.me, raft_log_index)
 		_, is_leader := sc.rf.GetState()
 		if sc.Is_Duplicate(op.Client_id, op.Request_id) && is_leader {
@@ -163,7 +163,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	sc.mu.Unlock()
 
 	select {
-	case <-time.After(time.Millisecond * 100):
+	case <-time.After(time.Millisecond * 500):
 		// DPrintf("[Leave TIMEOUT]From Client %d (Request %d) To Server %d, raftIndex %d", args.Client_id, args.Request_id, sc.me, raft_log_index)
 		_, is_leader := sc.rf.GetState()
 		if sc.Is_Duplicate(op.Client_id, op.Request_id) && is_leader {
@@ -208,7 +208,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	sc.mu.Unlock()
 
 	select {
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 		_, is_leader := sc.rf.GetState()
 		if sc.Is_Duplicate(op.Client_id, op.Request_id) && is_leader {
 			reply.Config = sc.Execute_Query(op)
