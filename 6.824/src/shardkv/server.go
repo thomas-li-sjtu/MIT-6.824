@@ -62,10 +62,10 @@ type ShardKV struct {
 	migrating_shard         [shardctrler.NShards]bool // 如果第i个shard迁移了，则相应第i个元素为true
 }
 
+// client的config num是否和kvserver的config num相同、shard是否在这个group中； shard是否在迁移——是否可用
 func (kv *ShardKV) is_shard_in_group(config_num, shard_id int) (bool, bool) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	// client的config num是否和kvserver的config num相同、shard是否在这个group中； shard是否在迁移——是否可用
 	return kv.ctrl_config.Num == config_num && kv.ctrl_config.Shards[shard_id] == kv.gid, !kv.migrating_shard[shard_id]
 }
 
